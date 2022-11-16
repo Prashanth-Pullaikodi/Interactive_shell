@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#Interactive Swarm cluster managment script
 
 ### Colors ##
 ESC=$(printf '\033') RESET="${ESC}[0m" BLACK="${ESC}[30m" RED="${ESC}[31m"
@@ -13,41 +14,27 @@ redprint() { printf "${RED}%s${RESET}\n" "$1"; }
 yellowprint() { printf "${YELLOW}%s${RESET}\n" "$1"; }
 magentaprint() { printf "${MAGENTA}%s${RESET}\n" "$1"; }
 cyanprint() { printf "${CYAN}%s${RESET}\n" "$1"; }
-fn_goodafternoon() { echo; echo "Good afternoon."; }
-fn_goodmorning() { echo; echo "Good morning."; }
-fn_bye() { echo "Bye bye."; exit 0; }
-fn_fail() { echo "Wrong option." exit 1; }
+bye() { echo "Bye bye."; exit 0; }
+fail() { echo "Wrong option." exit 1; }
 
 connect_shell() {
                 read -p "Enter service name to connect  : " service_name
                 read -p "Enter command to execute on container : "  command
-                read -p "Enter your username to connect swarm worker host : " username
+                command=${command:-sh}
+                uname=`whoami`
+                read -p "Enter your username to connect swarm worker host [default $uname]: " username
+                username=${username:-$uname}
                 echo -e "\n"
-                services=`sudo docker service ls --format '{{.Name}}' | grep -i $service_name`
-                number_of_services=`wc -l <<< "$services" | bc`
-                if [ "$number_of_services" -gt 1 ];
-                 then
-                        echo -e "\nOMGOMG, cannot decide!\n";
-                        echo -e "choose wisely:\n"
-                        echo "$services"
-                        exit 1
-                else
-                        service_name=`tr -d '\r' <<< $services`
-                        echo "will use service: $service_name"
-                        res=`sudo docker service ps $service_name -f 'desired-state=running' --format '{{.ID}}:{{.Node}}' | head -n1`
-                        echo "result: $res"
-                        service_id=`cut -d":" -f1 <<< "$res"`
-                        echo "service_id: $service_id"
-                        server_name_tmp=`cut -d":" -f2 <<< "$res"`
-                        server_name=`tr -d '\r' <<< "$server_name_tmp"`
-                        echo "server_name: $server_name"
-                        real_service_id_tmp=`ssh -t $username@$server_name "sudo docker ps | grep $service_id | cut -f1 -d' '"`
-                        real_service_id=`tr -d '\r' <<< $real_service_id_tmp`
-                        echo "real service id: $real_service_id"
-                        ssh -t $username@$server_name "sudo docker exec -ti $real_service_id $command"
-                fi;
+                ServiceId=`sudo docker service ps $service_name -f 'desired-state=running' --format '{{.ID}}' | head -n1`
+                service_node=`sudo docker service ps $service_name -f 'desired-state=running' --format '{{.Node}}' | head -n1`
+                echo "Service $(redprint $service_name) is running on $(redprint $service_node) with ID  $(redprint $ServiceId) "
+                real_service_id_tmp=`ssh -o LogLevel=QUIET -t $username@$service_node "sudo docker ps | grep $ServiceId | cut -f1 -d' '"`
+                real_service_id=`tr -d '\r' <<< $real_service_id_tmp`
+                echo -ne "Service $(redprint $service_name) is running on $(redprint $service_node) with real Task id: $(redprint $real_service_id) \n"
+                echo -ne "Connecting service ID  $(redprint $real_service_id) on $(redprint $service_node) with username $(redprint $username)"
+                echo -e "\n"
+                ssh -o LogLevel=QUIET -t $username@$service_node "sudo docker exec -ti $real_service_id $command"
 }
-
 
 list_services(){
         read -p "Enter service name to search : " service_name
@@ -66,7 +53,7 @@ task_state(){
 
 tail_logs(){
         read -p "Enter service name to tail logs : " service_name
-        read -p "Show logs since timestamp (e.g. 2013-01-02T13:23:37Z) or relative (e.g. 42m for 42 minutes), Default 1m :  " since
+        read -p "Show logs since timestamp (e.g. 1h for 1 hour) or relative (e.g. 42m for 42 minutes), Default 1m :  " since
         since=${since:-1m}
         echo -e "\n"
         sudo docker service logs -f  $service_name --since $since
@@ -84,13 +71,60 @@ inspect_service(){
         echo -e "\n"
 }
 
+
+docker_config(){
+        read -p "Enter config name to search : " config_name
+        config_name=${config_name:-$}
+        echo -e "\n"
+        sudo docker config ls  |egrep "$config_name"
+        echo -e "\n"
+}
+
+docker_secret(){
+        read -p "Enter docker_secret name to search : " secret_name
+        secret_name=${secret_name:-$}
+        echo -e "\n"
+        sudo docker secret ls  |egrep "$secret_name"
+        echo -e "\n"
+}
+
+
+connect_worker() {
+        sudo docker node ls
+        echo -e "\n"
+        uname=`whoami`
+        read -p "Enter HOSTNAME to connect : " worker_name
+        read -p "Enter your USERNAME to connect swarm worker host [default $uname]: " username
+        username=${username:-$uname}
+        read -p "Enter command to execute on container : [Default bash] "  command
+        command=${command:-bash}
+        echo "Connecting to WROKER NODW $(redprint $worker_name) with USERNAME $(redprint $username)"
+        echo -e "\n"
+        ssh -o LogLevel=QUIET  -tt -o StrictHostKeyChecking=no $username@$worker_name "$command"
+}
+
+
+worker_inspect() {
+        sudo docker node ls
+        echo -e "\n"
+        read -p "Enter wroker name to Inspect : " worker_name
+        read -p "Enter filter value : " search_value
+        search_value=${search_value:-$}
+        echo -e "\n"
+        echo -e "-----------------------------------------------"
+        echo "sudo docker node inspect  $worker_name |egrep $search_value"
+        sudo docker node inspect  $worker_name |egrep $search_value
+        echo -e "-----------------------------------------------"
+        echo -e "\n"
+}
+
 SwarmServiceCommands() {
 echo -ne "
 $(blueprint 'Swarm Service Commands')
 $(greenprint '1)') List Swarm Services
 $(greenprint '2)') Swarm Service TaskState
 $(greenprint '3)') Tail Service Logs
-$(greenprint '4)') Inspect Swarm Service 
+$(greenprint '4)') Inspect Swarm Service
 $(greenprint '5)') Connect To Shell
 $(magentaprint '6)') Go Back to Main Menu
 $(redprint '0)') Exit
@@ -123,10 +157,10 @@ Choose an option:  "
         menu
         ;;
     0)
-        fn_bye
+        bye
         ;;
     *)
-        fn_fail
+        fail
         ;;
     esac
 }
@@ -137,7 +171,7 @@ echo -ne "
 $(blueprint 'SwarmClusterCommands')
 $(greenprint '1)') List Swarm Nodes
 $(greenprint '2)') List Docker Configs
-$(greenprint '3)') List Docker  Secret
+$(greenprint '3)') List Docker Secret
 $(greenprint '4)') Inspect Swarm Nodes
 $(greenprint '5)') Connect To Wroker Node
 $(magentaprint '6)') Go Back to Main Menu
@@ -151,45 +185,30 @@ Choose an option:  "
         SwarmClusterCommands
         ;;
     2)
-        read -p "Enter service name to search : " service_name
-        sudo docker service ps  $service_name -f 'desired-state=running'
-        echo -e "\n"
+        docker_config
         SwarmClusterCommands
         ;;
     3)
-        read -p "Enter service name to tail logs : " service_name
-        read -p "Show logs since timestamp (e.g. 2013-01-02T13:23:37Z) or relative (e.g. 42m for 42 minutes), Default 1m :  " since
-        since=${since:-1m}
-        sudo docker service logs -f  $service_name --since $since
-        echo -e "\n"
+        docker_secret
         SwarmClusterCommands
         ;;
 
     4)
-        read -p "Enter service name to Inspect : " service_name
-        read -p "Enter value to Grep : " search_value
-        search_value=${search_value:-$}
-        echo -e "\n"
-        echo -e "-----------------------------------------------"
-        echo "docker service inspect  $service_name |egrep $search_value"
-        sudo docker service inspect  $service_name |egrep $search_value
-        echo -e "-----------------------------------------------"
-        echo -e "\n"
+        worker_inspect
         SwarmClusterCommands
         ;;
     5)
-        connect_shell
-        echo -e "\n"
+        connect_worker
         SwarmClusterCommands
         ;;
     6)
         menu
         ;;
     0)
-        fn_bye
+        bye
         ;;
     *)
-        fn_fail
+        fail
         ;;
     esac
 }
@@ -213,10 +232,10 @@ Choose an option:  "
         mainmenu
         ;;
     0)
-        fn_bye
+        bye
         ;;
     *)
-        fn_fail
+        fail
         ;;
     esac
 }
